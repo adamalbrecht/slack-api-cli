@@ -4,6 +4,15 @@ A local Slack CLI for fast terminal workflows against the Slack workspace you al
 
 This project does not create a Slack app and does not use Slack OAuth. It opens a local browser profile, lets you sign in to Slack normally, extracts the browser session token and cookies, and stores them in a private local auth cache.
 
+## What's New in v0.2.0
+
+- **Slack unread scanning (`mark-read`)** — Fully scan unread conversation history without mutating Slack. Filter out muted conversations with `--exclude-muted`, keep priority channels with `--priority`, and mark one channel as read through an exact timestamp with `--mark`.
+- **CLI Doctor (`doctor`)** — A read-only audit of installation, configuration, auth, Slack APIs, and agent-session readiness. Default output is concise for humans; add `--json` for a stable agent-readable report, `--offline` to inspect only local state, or `--strict` to fail on warnings.
+- **Agent Sessions (`session`, beta)** — Bridge a Slack thread to a local coding-agent session (tmux, cmux, or Herdr). The listener runs in a standalone pane, keeps all conversation in the bound thread, and delivers responses back to Slack with mrkdwn formatting. Ships with a portable agent skill (see below).
+- **Thread inspection (`channel replies`)** — Read a full thread by `--thread-ts` in addition to parent-only `channel history`.
+- **Read pagination (`read --max-pages`)** — Cursor-paginated thread reads so long threads are read completely, with incomplete reads reported and exiting nonzero.
+- **Secure browser profile permissions** — Tightened permissions on the configured browser profile directory and auth cache.
+
 ## Quick Start
 
 Requirement:
@@ -43,6 +52,12 @@ Validate the cached session:
 slack-api whoami
 ```
 
+Audit your installation end to end:
+
+```sh
+slack-api doctor
+```
+
 Search recent messages:
 
 ```sh
@@ -61,17 +76,47 @@ Read a message or thread by permalink:
 slack-api read --link 'https://example.slack.com/archives/C0123456789/p1778784641394639'
 ```
 
+Scan unread conversations, skipping muted ones:
+
+```sh
+slack-api mark-read --exclude-muted --priority '#design,#product'
+```
+
 ## Privacy Defaults
 
 Search and read commands redact message text by default. Add `--include-snippets` or `--include-text` only when you intentionally want message text in terminal output or saved JSON.
 
 Mutating commands are dry-run by default. Commands such as `send`, `reply`, `react`, and `draft` validate what would happen, then require an explicit flag such as `--send`, `--add`, `--remove`, `--create`, or `--delete`.
 
+## Agent Session Skill
+
+The `session` command ships with a portable agent skill that lets a coding agent (Claude Code, Codex, OpenCode, or Pi) start, operate, and stop Slack-backed sessions. It lives in the repository:
+
+```text
+.agents/skills/slack-agent-session/
+├── SKILL.md
+└── agents/
+    └── openai.yaml
+```
+
+To install it, copy the `slack-agent-session` folder into your agent's skills directory:
+
+```sh
+# location varies by agent:
+cp -R .agents/skills/slack-agent-session ~/.claude/skills/
+# or for project-scoped use:
+cp -R .agents/skills/slack-agent-session /path/to/your/project/.claude/skills/
+```
+
+Once installed, an agent can respond to requests like "connect this Slack thread to the current terminal" by following `SKILL.md`, which covers recommended defaults, `session start`, `session respond`, collaboration approval, and the hosted-listener flow.
+
 ## More Docs
 
 - [Setup and configuration](docs/setup-and-configuration.md)
 - [Common commands](docs/common-commands.md)
 - [Agent usage](docs/agent-usage.md)
+- [Agent sessions](docs/agent-sessions.md)
+- [Agent session assessment](docs/agent-session-assessment.md)
 
 ## Notes
 

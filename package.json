@@ -1,7 +1,7 @@
 {
   "name": "slack-api-cli",
-  "version": "0.1.1",
-  "description": "A local Slack CLI that reuses a signed-in browser session for search, read, and dry-run-safe message workflows.",
+  "version": "0.2.0",
+  "description": "A local Slack CLI that reuses a signed-in browser session for search, read, unread scanning, doctor audits, and dry-run-safe message workflows.",
   "license": "MIT",
   "repository": {
     "type": "git",
@@ -16,10 +16,12 @@
     "slack-api": "slack-api.cjs"
   },
   "scripts": {
+    "test": "node --test",
     "api": "node slack-api.cjs",
     "api:help": "node slack-api.cjs --help",
     "api:setup": "node slack-api-setup.cjs",
     "api:auth": "node slack-api-auth.cjs",
+    "api:doctor": "node slack-api-doctor.cjs",
     "api:me": "node slack-api-me.cjs",
     "api:search": "node slack-api-search.cjs",
     "api:read": "node slack-api-read.cjs",
@@ -31,16 +33,20 @@
     "api:draft": "node slack-api-draft.cjs",
     "api:emoji": "node slack-api-emoji.cjs",
     "api:reply": "node slack-api-reply.cjs",
-    "api:react": "node slack-api-react.cjs"
+    "api:react": "node slack-api-react.cjs",
+    "api:mark-read": "node slack-api-mark-read.cjs",
+    "api:session": "node slack-api-session.cjs"
   },
   "dependencies": {
     "playwright": "^1.59.1"
   },
   "files": [
+    ".agents/skills/**/*",
     "slack-api*.cjs",
     "LICENSE",
     "README.md",
-    "docs/**/*.md"
+    "docs/**/*.md",
+    "test/fixtures/session-thread.json"
   ],
   "engines": {
     "node": ">=20"
