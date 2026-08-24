@@ -4,6 +4,7 @@ const {
   loadAuth,
   parseCommonArgs,
   parsePermalink,
+  parsePositiveInt,
   slackApiCall,
 } = require("./slack-api-common.cjs");
 
@@ -14,6 +15,7 @@ function parseArgs(argv) {
     ts: "",
     threadTs: "",
     limit: 50,
+    maxPages: 20,
     includeText: process.env.SLACK_INCLUDE_TEXT === "1",
   });
 
@@ -29,7 +31,8 @@ function parseArgs(argv) {
     else if (arg === "--channel") args.channel = next();
     else if (arg === "--ts") args.ts = next();
     else if (arg === "--thread-ts") args.threadTs = next();
-    else if (arg === "--limit") args.limit = Number(next());
+    else if (arg === "--limit") args.limit = parsePositiveInt(next(), "--limit");
+    else if (arg === "--max-pages") args.maxPages = parsePositiveInt(next(), "--max-pages");
     else if (arg === "--include-text") args.includeText = true;
     else if (arg === "--redact-text") args.includeText = false;
     else if (arg === "--help" || arg === "-h") {
@@ -51,9 +54,6 @@ function parseArgs(argv) {
   if (!args.channel) throw new Error("--link or --channel is required");
   if (!args.ts) throw new Error("--link or --ts is required");
   if (!args.threadTs) args.threadTs = args.ts;
-  if (!Number.isFinite(args.limit) || args.limit < 1) {
-    throw new Error("--limit must be at least 1");
-  }
 
   return args;
 }
@@ -69,7 +69,8 @@ Options:
   --channel ID        Slack channel id
   --ts TS             Target message timestamp
   --thread-ts TS      Thread root timestamp. Defaults to --ts
-  --limit N           Max thread messages. Default: 50
+  --limit N           Messages per replies page. Default: 50
+  --max-pages N       Maximum replies pages. Default: 20
   --include-text      Include message text
   --redact-text       Redact message text in output. Default
   --workspace URL     Slack workspace URL
@@ -96,40 +97,210 @@ function sanitizeMessage(message, includeText) {
   };
 }
 
-async function main() {
-  const args = parseArgs(process.argv.slice(2));
+async function fetchThreadReplies(args, dependencies = {}) {
+  const callSlackApi = dependencies.slackApiCall || slackApiCall;
+  const messages = [];
+  const messageTimestamps = new Set();
+  const seenCursors = new Set();
+  const pages = [];
+  let cursor = "";
+  let status = null;
+  let authSource = null;
+  let authHint;
 
-  args.auth = await loadAuth(args);
-  const { response, json, auth } = await slackApiCall(args, "conversations.replies", {
-    channel: args.channel,
-    ts: args.threadTs,
-    limit: args.limit,
-    inclusive: true,
-  });
+  for (let pageIndex = 0; pageIndex < args.maxPages; pageIndex += 1) {
+    if (seenCursors.has(cursor)) {
+      return {
+        ok: false,
+        complete: false,
+        error: "replies_pagination_stalled",
+        status,
+        authSource,
+        authHint,
+        hasMore: true,
+        nextCursor: cursor,
+        messages,
+        pages,
+      };
+    }
+    seenCursors.add(cursor);
 
-  const messages = json.messages || [];
-  const target = messages.find((message) => message.ts === args.ts);
-  const output = {
-    ok: json.ok,
-    status: response.status,
-    error: json.error,
+    let response;
+    let json;
+    let auth;
+    try {
+      ({ response, json, auth } = await callSlackApi(args, "conversations.replies", {
+        channel: args.channel,
+        ts: args.threadTs,
+        limit: args.limit,
+        cursor,
+        inclusive: true,
+      }));
+    } catch (error) {
+      return {
+        ok: false,
+        complete: false,
+        error: error.message || String(error),
+        status,
+        authSource,
+        authHint,
+        hasMore: true,
+        nextCursor: cursor,
+        messages,
+        pages,
+      };
+    }
+
+    status = response?.status ?? status;
+    authSource = auth?.source || authSource;
+    authHint = json?.authHint || authHint;
+    if (!json || typeof json !== "object") {
+      return {
+        ok: false,
+        complete: false,
+        error: "invalid_conversations_replies_response",
+        status,
+        authSource,
+        authHint,
+        hasMore: true,
+        nextCursor: cursor,
+        messages,
+        pages,
+      };
+    }
+
+    const pageMessages = Array.isArray(json.messages) ? json.messages : [];
+    const nextCursor = json.response_metadata?.next_cursor || "";
+    const hasMore = Boolean(json.has_more || nextCursor);
+    pages.push({
+      ok: Boolean(json.ok),
+      status,
+      error: json.error || null,
+      itemCount: pageMessages.length,
+      cursor,
+      nextCursor,
+      hasMore,
+    });
+
+    if (!json.ok) {
+      return {
+        ok: false,
+        complete: false,
+        error: json.error || "conversations_replies_failed",
+        status,
+        authSource,
+        authHint,
+        hasMore: true,
+        nextCursor,
+        messages,
+        pages,
+      };
+    }
+
+    for (const message of pageMessages) {
+      const timestamp = String(message.ts || "");
+      if (!timestamp || messageTimestamps.has(timestamp)) continue;
+      messageTimestamps.add(timestamp);
+      messages.push(message);
+    }
+
+    if (!hasMore) {
+      return {
+        ok: true,
+        complete: true,
+        error: null,
+        status,
+        authSource,
+        authHint,
+        hasMore: false,
+        nextCursor: "",
+        messages,
+        pages,
+      };
+    }
+
+    if (!nextCursor) {
+      return {
+        ok: false,
+        complete: false,
+        error: "replies_next_cursor_missing",
+        status,
+        authSource,
+        authHint,
+        hasMore: true,
+        nextCursor: "",
+        messages,
+        pages,
+      };
+    }
+    cursor = nextCursor;
+  }
+
+  return {
+    ok: false,
+    complete: false,
+    error: "replies_page_limit_reached",
+    status,
+    authSource,
+    authHint,
+    hasMore: true,
+    nextCursor: cursor,
+    messages,
+    pages,
+  };
+}
+
+function buildOutput(args, result) {
+  const target = result.messages.find((message) => message.ts === args.ts);
+  return {
+    ok: result.ok,
+    complete: result.complete,
+    status: result.status,
+    error: result.error,
     channelId: args.channel,
     targetTs: args.ts,
     rootTs: args.threadTs,
     isThreadReply: Boolean(args.isThreadReply),
     includeText: args.includeText,
-    authSource: auth.source,
-    authHint: json.authHint,
-    hasMore: Boolean(json.has_more),
-    messageCount: messages.length,
+    authSource: result.authSource,
+    authHint: result.authHint,
+    hasMore: result.hasMore,
+    pageCount: result.pages.length,
+    nextCursor: result.nextCursor || "",
+    messageCount: result.messages.length,
     target: target ? sanitizeMessage(target, args.includeText) : null,
-    messages: messages.map((message) => sanitizeMessage(message, args.includeText)),
+    messages: result.messages.map((message) => sanitizeMessage(message, args.includeText)),
   };
-
-  console.log(JSON.stringify(output, null, 2));
 }
 
-main().catch((error) => {
-  console.error(error.message);
-  process.exitCode = 1;
-});
+function exitCodeForOutput(output) {
+  return output?.ok && output.complete ? 0 : 1;
+}
+
+async function main(argv = process.argv.slice(2), dependencies = {}) {
+  const args = parseArgs(argv);
+  const authenticate = dependencies.loadAuth || loadAuth;
+  args.auth = await authenticate(args);
+  const result = await fetchThreadReplies(args, dependencies);
+  const output = buildOutput(args, result);
+  console.log(JSON.stringify(output, null, 2));
+  return output;
+}
+
+if (require.main === module) {
+  main().then((output) => {
+    process.exitCode = exitCodeForOutput(output);
+  }).catch((error) => {
+    console.error(error.message);
+    process.exitCode = 1;
+  });
+}
+
+module.exports = {
+  buildOutput,
+  exitCodeForOutput,
+  fetchThreadReplies,
+  main,
+  parseArgs,
+  sanitizeMessage,
+};
