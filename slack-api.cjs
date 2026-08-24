@@ -13,6 +13,11 @@ const COMMANDS = {
     script: "slack-api-auth.cjs",
     summary: "Validate or refresh cached browser credentials.",
   },
+  doctor: {
+    script: "slack-api-doctor.cjs",
+    summary: "Audit installation, configuration, auth, Slack APIs, and agent-session readiness.",
+    aliases: ["diagnose", "healthcheck"],
+  },
   me: {
     script: "slack-api-me.cjs",
     summary: "Show the signed-in Slack user.",
@@ -73,6 +78,16 @@ const COMMANDS = {
     summary: "Dry-run, add, or remove an emoji reaction.",
     aliases: ["reaction"],
   },
+  "mark-read": {
+    script: "slack-api-mark-read.cjs",
+    summary: "Scan unread messages, filter muted conversations, or mark one channel exactly.",
+    aliases: ["mark", "unread"],
+  },
+  session: {
+    script: "slack-api-session.cjs",
+    summary: "Bridge one Slack thread to a local agent session.",
+    aliases: ["sessions", "agent-session"],
+  },
 };
 
 const ALIASES = Object.fromEntries(
@@ -103,6 +118,7 @@ Usage:
 Commands:
   setup      ${COMMANDS.setup.summary}
   auth       ${COMMANDS.auth.summary}
+  doctor     ${COMMANDS.doctor.summary}
   whoami     ${COMMANDS.me.summary} Alias: me
   search     ${COMMANDS.search.summary}
   read       ${COMMANDS.read.summary} Alias: thread
@@ -115,6 +131,8 @@ Commands:
   emoji      ${COMMANDS.emoji.summary}
   reply      ${COMMANDS.reply.summary}
   react      ${COMMANDS.react.summary}
+  mark-read  ${COMMANDS["mark-read"].summary}
+  session    ${COMMANDS.session.summary}
 
 Help:
   ${cli} --help
@@ -125,10 +143,13 @@ Help:
 Examples:
   ${cli} setup
   ${cli} whoami
+  ${cli} doctor
+  ${cli} doctor --json
   ${cli} search --query "customer escalation" --since 5m
   ${cli} dm history --user "Alice Smith" --include-text
   ${cli} read --link 'https://example.slack.com/archives/C0123456789/p1778784641394639'
   ${cli} send --channel '#general' --message 'Thanks'
+  ${cli} session doctor
 
 Run '${cli} help <command>' for command-specific options and examples.
 Run '${cli} agent-help' for agent-oriented operational context.
@@ -149,12 +170,13 @@ NPM equivalent:
 Credential model:
   - This CLI does not use an official Slack app token or OAuth token.
   - Run ${cli} setup once to save your Slack workspace URL and extract Slack's browser API token plus cookies from a signed-in browser session.
-  - Normal whoami/search/read/channel/dm/user/file/send/draft create/draft info/emoji/react/reply commands use the private auth cache and do not launch Chromium.
+  - Normal whoami/search/read/channel/dm/user/file/send/draft create/draft info/emoji/react/reply/session commands use the private auth cache and do not launch Chromium.
   - If the user asks for conversation history with a person, prefer ${cli} dm history --user "Full Name" --include-text.
   - draft delete intentionally launches Chromium to drive Slack's Drafts & sent UI because direct drafts.delete returns team_is_restricted.
   - It does not print token or cookie values.
   - Treat the configured browser profile directory and auth cache file as sensitive session material.
   - If Slack needs login during refresh, rerun ${cli} auth --refresh --headed and complete login.
+  - Run ${cli} doctor --json for a read-only, machine-readable installation and API audit before debugging commands individually.
 
 Commands:
   setup
@@ -169,6 +191,20 @@ Commands:
     Example:
       ${cli} auth
       ${cli} auth --refresh
+
+  doctor
+    Run a read-only audit of Node/runtime compatibility, installed command files,
+    config and credential permissions, browser refresh readiness, cached Slack auth,
+    Enterprise routing, account restrictions, unread/mute APIs, conversation listing,
+    and local agent-session readiness.
+    Default output is concise for humans. Add --json for a stable agent-readable report.
+    Add --offline to inspect only local state or --strict to fail on warnings.
+    Add --deep for a metadata-only audit of unread conversation coverage.
+    Examples:
+      ${cli} doctor
+      ${cli} doctor --json
+      ${cli} doctor --offline --strict
+      ${cli} doctor --deep --strict --json
 
   whoami
     Print the current Slack user's profile plus agent-friendly identifiers.
@@ -192,6 +228,8 @@ Commands:
 
   read
     Read a message or thread. Prefer --link with a Slack permalink.
+    Thread replies are cursor-paginated; incomplete reads return complete: false and exit nonzero.
+    Use --max-pages to cap pagination. The default is 20 pages.
     Message text is redacted by default. Use --include-text for full text.
     Alias: thread
     Example:
@@ -199,11 +237,15 @@ Commands:
       ${cli} thread --link 'https://example.slack.com/archives/C0123456789/p1778784641394639' --include-text
 
   channel
-    Search channels, resolve channel metadata, read channel history, and list members.
+    Search channels, resolve metadata, read parent-only history or a full thread, and list members.
+    channel history does not expand thread replies, even when replyCount is present.
+    Use channel replies with --thread-ts for a full thread.
+    Once an agent session is bound, prefer read --link with its permalink.
     Examples:
       ${cli} channel search --query platform --limit 10
       ${cli} channel info --channel '#general'
       ${cli} channel history --channel '#general' --since 30m --limit 50 --include-text
+      ${cli} channel replies --channel '#general' --thread-ts 1778748406.056539 --include-text
       ${cli} channel members --channel '#general' --limit 100
 
   dm
@@ -289,6 +331,43 @@ Commands:
       ${cli} reply --link 'https://example.slack.com/archives/C0123456789/p1778784641394639' --message 'Testing direct Slack API reply' --send
       ${cli} reply --link 'https://example.slack.com/archives/C0123456789/p1778784641394639' --message 'See attached' --attach /tmp/report.pdf --send
 
+  mark-read
+    Completely scan unread conversation history without mutating Slack.
+    The default all-scan uses users.counts and fetches history only for positive conversation/DM unread counts.
+    Add --exclude-muted to read notification preferences once and skip muted conversations before history is fetched.
+    Add repeatable --priority ID|NAME values to include selected muted channels anyway.
+    Use --scan-all-conversations for a slower read-only diagnostic scan of every joined conversation.
+    Output coverage explicitly excludes Slack Activity and thread notifications.
+    A scan returns complete: false and exits nonzero if any page or channel could not be read.
+    Marking is a separate single-channel operation and requires an exact --through-ts target.
+    Use --if-last-read to reject the mark if Slack's cursor changed after the scan.
+    A permalink may supply both the channel and exact target timestamp.
+    Time filters are display-only and cannot be combined with --mark.
+    Example scan (all channels):
+      ${cli} mark-read
+      ${cli} mark-read --since 30m --include-text
+      ${cli} unread --since 7d --exclude-muted --priority '#design,#product'
+    Example scan (single channel):
+      ${cli} mark-read channel --channel '#general' --include-text
+    Example exact mark after a stored/classified scan:
+      ${cli} mark-read channel --channel C0123456789 --through-ts 1778784641.394639 --if-last-read 1778784500.000001 --mark
+    Example exact mark via permalink:
+      ${cli} mark-read channel --link 'https://example.slack.com/archives/C0123456789/p1778784641394639' --mark
+
+  session
+    Bind a new self-DM Slack thread to a local tmux, cmux, or Herdr agent session.
+    A configured profile can launch the listener in a standalone Herdr/cmux pane.
+    Sessions are owner-only by default and collaborator input is approval-gated.
+    Saved defaults control response delivery; --no-send-responses is a per-run opt-out.
+    Session responses use Slack mrkdwn and accept --message, --message-file, or --stdin.
+    Examples:
+      ${cli} session doctor
+      ${cli} session defaults set --channel me --send-responses --provider auto --poll-seconds 3 --headless --host auto
+      ${cli} session start
+      ${cli} session show --id sess_EXAMPLE --verbose
+      ${cli} session restart --id sess_EXAMPLE
+      ${cli} session respond --id sess_EXAMPLE --event evt_EXAMPLE --message 'Work complete.' --send
+
 Operational notes:
   - Quote Slack links containing ? or &.
   - Search result ts values are Slack/Unix timestamps in seconds with fractional precision.
@@ -297,7 +376,7 @@ Operational notes:
   - Browser refresh may require elevated execution in Codex on macOS due Chromium sandbox/session restrictions.
   - Slack API network calls may also need elevated execution in Codex. Approve the broad slack-api prefix so all subcommands work.
   - If cached auth is missing or rejected, run ${cli} setup or ${cli} auth --refresh --headed once outside the sandbox, then retry.
-  - Existing lower-level scripts still work: npm run api:auth, api:me, api:search, api:read, api:channel, api:dm, api:user, api:file, api:send, api:draft, api:emoji, api:reply, api:react.
+  - Existing lower-level scripts still work: npm run api:auth, api:me, api:search, api:read, api:channel, api:dm, api:user, api:file, api:send, api:draft, api:emoji, api:reply, api:react, api:session.
 `);
 }
 

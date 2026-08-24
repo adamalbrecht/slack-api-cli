@@ -17,7 +17,10 @@ const DEFAULT_CONFIG_PATH = process.env.SLACK_API_CONFIG
   || path.join(CONFIG_DIR, "config.json");
 const DEFAULT_PROFILE = path.join(DATA_DIR, "browser-profile");
 const DEFAULT_AUTH_CACHE = path.join(DATA_DIR, "auth.json");
+const DEFAULT_SESSION_DIR = process.env.SLACK_API_SESSION_DIR
+  || path.join(DATA_DIR, "sessions");
 const DEFAULT_CONVERSATION_TYPES = "public_channel,private_channel,im,mpim";
+const DEFAULT_SLACK_REQUEST_TIMEOUT_MS = 30_000;
 
 function normalizeWorkspaceUrl(value) {
   const trimmed = String(value || "").trim();
@@ -166,6 +169,13 @@ function ensurePlaywrightBrowserInstalled() {
   return check;
 }
 
+async function ensurePrivateDirectory(directory, dependencies = {}) {
+  const fileSystem = dependencies.fs || fs;
+  await fileSystem.mkdir(directory, { recursive: true, mode: 0o700 });
+  await fileSystem.chmod(directory, 0o700);
+  return directory;
+}
+
 function parseCommonArgs(argv, defaults = {}) {
   let configPath = DEFAULT_CONFIG_PATH;
   for (let index = 0; index < argv.length; index += 1) {
@@ -299,7 +309,7 @@ async function isBrowserAuthValid(args, auth) {
 async function loadBrowserAuth(args) {
   const { chromium } = loadPlaywright();
   ensurePlaywrightBrowserInstalled();
-  await fs.mkdir(args.profile, { recursive: true });
+  await ensurePrivateDirectory(args.profile);
 
   const context = await chromium.launchPersistentContext(args.profile, {
     headless: args.headless,
@@ -504,11 +514,65 @@ async function loadAuth(args) {
   };
 }
 
+function slackRequestSignal(args = {}) {
+  const configuredTimeoutMs = Number(args.timeoutMs);
+  const timeoutMs = Number.isFinite(configuredTimeoutMs) && configuredTimeoutMs > 0
+    ? Math.floor(configuredTimeoutMs)
+    : DEFAULT_SLACK_REQUEST_TIMEOUT_MS;
+  const timeoutSignal = AbortSignal.timeout(timeoutMs);
+  if (!args.signal) {
+    return {
+      timeoutMs,
+      signal: timeoutSignal,
+      cleanup() {},
+    };
+  }
+
+  const controller = new AbortController();
+  const sources = [args.signal, timeoutSignal];
+  const abortFrom = (source) => {
+    if (!controller.signal.aborted) {
+      controller.abort(source.reason);
+    }
+  };
+  const listeners = sources.map((source) => {
+    const listener = () => abortFrom(source);
+    if (source.aborted) {
+      abortFrom(source);
+    } else {
+      source.addEventListener("abort", listener, { once: true });
+    }
+    return [source, listener];
+  });
+
+  return {
+    timeoutMs,
+    signal: controller.signal,
+    cleanup() {
+      for (const [source, listener] of listeners) {
+        source.removeEventListener("abort", listener);
+      }
+    },
+  };
+}
+
+function throwSlackRequestFailure(error, args, request) {
+  if (args.signal?.aborted) {
+    throw new Error("Slack API request was cancelled");
+  }
+  if (request.signal.aborted && request.signal.reason?.name === "TimeoutError") {
+    throw new Error(`Slack API request timed out after ${request.timeoutMs}ms`);
+  }
+  throw new Error(slackNetworkFailure(error));
+}
+
 async function slackApiCall(args, method, params = {}) {
   const auth = args.auth || await loadAuth(args);
   const workspace = args.workspace || auth.workspace;
   const body = new URLSearchParams({ token: auth.token, ...cleanParams(params) });
+  const request = slackRequestSignal(args);
   let response;
+  let json;
   try {
     response = await fetch(`${workspaceOrigin(workspace)}/api/${method}`, {
       method: "POST",
@@ -519,12 +583,15 @@ async function slackApiCall(args, method, params = {}) {
         "referer": "https://app.slack.com/client",
       },
       body,
+      signal: request.signal,
     });
+    json = await response.json();
   } catch (error) {
-    throw new Error(slackNetworkFailure(error));
+    throwSlackRequestFailure(error, args, request);
+  } finally {
+    request.cleanup();
   }
 
-  const json = await response.json();
   if (!json.ok && auth.source === "cache" && ["invalid_auth", "not_authed", "token_revoked", "account_inactive"].includes(json.error)) {
     json.authHint = "Cached Slack auth was rejected. Run `slack-api auth --refresh` once, then retry.";
   }
@@ -946,7 +1013,9 @@ async function fetchSlackPrivateUrl(args, url) {
   }
 
   const auth = args.auth || await loadAuth(args);
+  const request = slackRequestSignal(args);
   let response;
+  let buffer;
   try {
     response = await fetch(url, {
       headers: {
@@ -954,13 +1023,16 @@ async function fetchSlackPrivateUrl(args, url) {
         "cookie": auth.cookieHeader,
         "referer": "https://app.slack.com/client",
       },
+      signal: request.signal,
     });
+    buffer = Buffer.from(await response.arrayBuffer());
   } catch (error) {
-    throw new Error(slackNetworkFailure(error));
+    throwSlackRequestFailure(error, args, request);
+  } finally {
+    request.cleanup();
   }
 
   const contentType = response.headers.get("content-type") || "";
-  const buffer = Buffer.from(await response.arrayBuffer());
   return { response, contentType, buffer, auth };
 }
 
@@ -971,12 +1043,14 @@ module.exports = {
   DEFAULT_CONVERSATION_TYPES,
   DEFAULT_CONFIG,
   DEFAULT_PROFILE,
+  DEFAULT_SESSION_DIR,
   DEFAULT_TEAM_ID,
   DEFAULT_WORKSPACE,
   authorFilter,
   buildTimeWindow,
   dateFilter,
   ensurePlaywrightBrowserInstalled,
+  ensurePrivateDirectory,
   fetchSlackPrivateUrl,
   isTimestampInWindow,
   looksLikeSlackSearchModifier,
