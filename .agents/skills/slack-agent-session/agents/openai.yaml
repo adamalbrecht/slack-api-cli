@@ -1,0 +1,4 @@
+interface:
+  display_name: "Slack Agent Session"
+  short_description: "Start and operate Slack-backed coding sessions"
+  default_prompt: "Use $slack-agent-session to start a Slack thread session for this coding agent."

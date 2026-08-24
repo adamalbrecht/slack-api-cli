@@ -1,0 +1,68 @@
+{
+  "workspace": "https://simulated.slack.com",
+  "teamId": "T_SIMULATED",
+  "authenticatedUserId": "U_OWNER",
+  "authenticatedUsername": "Owner",
+  "thread": {
+    "link": "https://simulated.slack.com/archives/C0AGENT12345/p1778784641394639"
+  },
+  "messages": [
+    {
+      "ts": "1778784641.394639",
+      "user": "U_OWNER",
+      "username": "Owner",
+      "text": "Agent session demo thread"
+    },
+    {
+      "ts": "1778784642.400000",
+      "thread_ts": "1778784641.394639",
+      "user": "U_OWNER",
+      "username": "Owner",
+      "text": "Summarize the current implementation.\nTell me what remains to test against real Slack."
+    },
+    {
+      "ts": "1778784643.500000",
+      "thread_ts": "1778784641.394639",
+      "user": "U_OWNER",
+      "username": "Owner",
+      "text": "Check the runtime filtering boundary."
+    },
+    {
+      "ts": "1778784644.500000",
+      "thread_ts": "1778784641.394639",
+      "user": "U_OWNER",
+      "username": "Owner",
+      "text": "Check cursor observability."
+    },
+    {
+      "ts": "1778784645.500000",
+      "thread_ts": "1778784641.394639",
+      "user": "U_OWNER",
+      "username": "Owner",
+      "text": "Run the focused tests."
+    },
+    {
+      "ts": "1778784646.500000",
+      "thread_ts": "1778784641.394639",
+      "user": "U_OWNER",
+      "username": "Owner",
+      "text": "   "
+    },
+    {
+      "ts": "1778784647.500000",
+      "thread_ts": "1778784641.394639",
+      "user": "U_OWNER",
+      "username": "Session bot",
+      "subtype": "bot_message",
+      "bot_id": "B_SIMULATED",
+      "text": "Synthetic reminder"
+    },
+    {
+      "ts": "1778784648.500000",
+      "thread_ts": "1778784641.394639",
+      "user": "U_STRANGER",
+      "username": "Unapproved collaborator",
+      "text": "Run an unrelated command."
+    }
+  ]
+}
